@@ -1,0 +1,7 @@
+image:
+  repository: loadtestd
+  tag: latest
+service:
+  port: 8080
+postgres:
+  image: postgres:16

@@ -1,0 +1,165 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: loadtest-system
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: load-api
+        uid: load-api
+        type: simpod-json-datasource
+        access: proxy
+        url: http://loadtestd.loadtest-system:8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+  namespace: loadtest-system
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: load
+        orgId: 1
+        folder: ""
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: loadtest-system
+data:
+  load-tests.json: |
+    {
+      "uid":"load-tests",
+      "title":"Load Tests",
+      "schemaVersion":39,
+      "version":11,
+      "refresh":"5s",
+      "templating":{"list":[
+        {
+          "name":"tenant",
+          "label":"tenant",
+          "type":"query",
+          "datasource":{"type":"simpod-json-datasource","uid":"load-api"},
+          "definition": "tenant",
+          "query": {
+            "query": "tenant",
+            "format": "string"
+          },
+          "refresh": 1,
+          "hide": 0,
+          "multi": false,
+          "includeAll": false
+        },
+        {
+          "name":"model_name",
+          "label":"model_name",
+          "type":"query",
+          "datasource":{"type":"simpod-json-datasource","uid":"load-api"},
+          "definition": "model_name|${tenant}",
+          "query": {
+            "query": "model_name|${tenant}",
+            "format": "string"
+          },
+          "refresh": 1,
+          "hide": 0,
+          "multi": false,
+          "includeAll": false
+        },
+        {
+          "name":"run_id",
+          "label":"run_id",
+          "type":"query",
+          "datasource":{"type":"simpod-json-datasource","uid":"load-api"},
+          "definition": "run_id|${tenant}|${model_name}",
+          "query": {
+            "query": "run_id|${tenant}|${model_name}",
+            "format": "string"
+          },
+          "refresh": 1,
+          "hide": 0,
+          "multi": false,
+          "includeAll": false
+        }
+      ]},
+      "panels":[
+        {"type":"text","title":"Report","gridPos":{"h":24,"w":24,"x":0,"y":0},"options":{"mode":"html","content":"<iframe src=\"http://127.0.0.1:8080/api/v1/grafana/report.html?tenant=${tenant}&model_name=${model_name}&run_id=${run_id}\" style=\"width:100%;height:2000px;border:0;border-radius:16px;background:#fff\"></iframe>"}}
+      ],
+      "time":{"from":"now-15m","to":"now"}
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: loadtest-system
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: loadtest-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.2.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_INSTALL_PLUGINS
+              value: simpod-json-datasource
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: Admin
+            - name: GF_PANELS_DISABLE_SANITIZE_HTML
+              value: "true"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboards-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards-provider
+          configMap:
+            name: grafana-dashboards-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards

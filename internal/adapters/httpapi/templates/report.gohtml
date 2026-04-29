@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Load Test Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+:root {
+  --bg: #ffffff;
+  --fg: #24292e;
+  --muted: #6a737d;
+  --border: #d1d5da;
+  --card-bg: #f6f8fa;
+  --accent: #0069d9;
+  --ok: #28a745;
+  --warn: #d73a49;
+  --font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0c0e;
+    --fg: #d8d9da;
+    --muted: #9fa7af;
+    --border: #2c3235;
+    --card-bg: #181b1f;
+    --accent: #3274d9;
+    --ok: #56a64b;
+    --warn: #f2495c;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 16px;
+  font: 13px/1.5 var(--font-family);
+  background-color: var(--bg);
+  color: var(--fg);
+}
+
+.wrap { max-width: 1200px; margin: 0 auto; }
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.header h1 { margin: 0; font-size: 20px; font-weight: 500; }
+.header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+
+.section-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 24px 0 12px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1px;
+  background-color: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.meta-item {
+  background-color: var(--bg);
+  padding: 12px;
+}
+
+.meta-item dt { font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 4px; }
+.meta-item dd { margin: 0; font-weight: 500; font-size: 14px; overflow-wrap: anywhere; }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.card {
+  background-color: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 16px;
+}
+
+.card span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; }
+.card strong { display: block; margin-top: 8px; font-size: 24px; font-weight: 400; }
+
+.tables-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.table-wrap {
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+
+.table-wrap h2 {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  background-color: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+table { width: 100%; border-collapse: collapse; }
+td { padding: 8px 16px; border-bottom: 1px solid var(--border); }
+tr:last-child td { border-bottom: 0; }
+td:last-child { text-align: right; font-family: monospace; font-size: 14px; }
+
+.chart-box {
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.status-success { color: var(--ok); }
+.status-failed { color: var(--warn); }
+
+.empty {
+  padding: 40px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+@media (max-width: 600px) {
+  .tables-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div>
+      <h1>Load Test Report</h1>
+    </div>
+  </div>
+
+  {{if not .IsReady}}
+  <div class="empty">Please select filters in Grafana to view the report.</div>
+  {{else}}
+    {{if .HasRun}}
+      <dl class="meta-grid">
+        <div class="meta-item"><dt>Run ID</dt><dd>{{.RunID}}</dd></div>
+        <div class="meta-item"><dt>Status</dt><dd class="status-{{lower .Status}}">{{.Status}}</dd></div>
+        <div class="meta-item"><dt>Created</dt><dd>{{.CreatedAt}}</dd></div>
+        <div class="meta-item"><dt>Tenant</dt><dd>{{.Tenant}}</dd></div>
+        <div class="meta-item"><dt>Model</dt><dd>{{.ModelName}}</dd></div>
+        <div class="meta-item"><dt>Protocol</dt><dd>{{.Protocol}}</dd></div>
+        {{if .TargetRPS}}<div class="meta-item"><dt>Target RPS</dt><dd>{{.TargetRPS}}</dd></div>{{end}}
+        {{if .MaxLatencyMS}}<div class="meta-item"><dt>Latency SLO</dt><dd>{{.MaxLatencyMS}} ms</dd></div>{{end}}
+        {{if .SearchExec}}<div class="meta-item"><dt>Search Executor</dt><dd>{{.SearchExec}}</dd></div>{{end}}
+        {{if .SearchStop}}<div class="meta-item"><dt>Search Stop</dt><dd>{{.SearchStop}}</dd></div>{{end}}
+      </dl>
+
+      {{if .HasSearch}}
+      <div class="section-title">Search Analysis</div>
+      <div class="tables-grid">
+        <div class="chart-box">
+          <canvas id="latencyChart" style="max-height:300px"></canvas>
+        </div>
+        <div class="chart-box">
+          <canvas id="errorsChart" style="max-height:300px"></canvas>
+        </div>
+        <div class="chart-box">
+          <canvas id="throughputChart" style="max-height:300px"></canvas>
+        </div>
+        <div class="chart-box">
+          <canvas id="vusChart" style="max-height:300px"></canvas>
+        </div>
+      </div>
+      <script>
+        const steps = {{.SearchSteps}};
+        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const color = isDark ? '#3274d9' : '#0069d9';
+        const throughputColor = isDark ? '#56a64b' : '#28a745';
+        const vusColor = isDark ? '#f2c94c' : '#f2994a';
+        const errColor = isDark ? '#f2495c' : '#d73a49';
+        const gridColor = isDark ? '#2c3235' : '#d1d5da';
+        const textColor = isDark ? '#d8d9da' : '#24292e';
+
+        const commonOptions = {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { labels: { color: textColor, boxWidth: 12, font: { size: 11 } } }
+          },
+          scales: {
+            x: { grid: { color: gridColor }, ticks: { color: textColor } },
+            y: { 
+              beginAtZero: true,
+              min: 0,
+              grid: { color: gridColor }, 
+              ticks: { color: textColor } 
+            }
+          }
+        };
+
+        new Chart(document.getElementById('latencyChart'), {
+          type: 'line',
+          data: {
+            labels: steps.map(s => `#${s.step_number}: ${s.rps} {{.SearchLoad}}`),
+            datasets: [{
+              label: 'p99 Latency (ms)',
+              data: steps.map(s => s.p99_latency_ms),
+              borderColor: color,
+              backgroundColor: color + '22',
+              tension: 0.2,
+              fill: true
+            }]
+          },
+          options: {
+            ...commonOptions,
+            scales: {
+              ...commonOptions.scales,
+              y: { ...commonOptions.scales.y, title: { display: true, text: 'Latency (ms)', color: textColor } }
+            }
+          }
+        });
+
+        new Chart(document.getElementById('errorsChart'), {
+          type: 'line',
+          data: {
+            labels: steps.map(s => `#${s.step_number}: ${s.rps} {{.SearchLoad}}`),
+            datasets: [{
+              label: 'Error Rate (%)',
+              data: steps.map(s => s.error_rate * 100),
+              borderColor: errColor,
+              backgroundColor: errColor + '22',
+              tension: 0.2,
+              fill: true
+            }]
+          },
+          options: {
+            ...commonOptions,
+            scales: {
+              ...commonOptions.scales,
+              y: { ...commonOptions.scales.y, title: { display: true, text: 'Errors (%)', color: textColor } }
+            }
+          }
+        });
+
+        new Chart(document.getElementById('throughputChart'), {
+          type: 'line',
+          data: {
+            labels: steps.map(s => `#${s.step_number}: ${s.rps} {{.SearchLoad}}`),
+            datasets: [
+              {
+                label: 'Actual RPS',
+                data: steps.map(s => s.actual_rps),
+                borderColor: throughputColor,
+                backgroundColor: throughputColor + '22',
+                tension: 0.1,
+                fill: true
+              }
+            ]
+          },
+          options: {
+            ...commonOptions,
+            scales: {
+              ...commonOptions.scales,
+              y: { 
+                ...commonOptions.scales.y,
+                title: { display: true, text: 'Actual RPS', color: textColor }
+              }
+            }
+          }
+        });
+
+        new Chart(document.getElementById('vusChart'), {
+          type: 'line',
+          data: {
+            labels: steps.map(s => `#${s.step_number}: ${s.rps} {{.SearchLoad}}`),
+            datasets: [
+              {
+                label: 'VUs',
+                data: steps.map(s => s.vus),
+                borderColor: vusColor,
+                backgroundColor: vusColor + '22',
+                tension: 0.1,
+                fill: true
+              },
+              {
+                label: 'Max VUs',
+                data: steps.map(s => s.max_vus),
+                borderColor: vusColor,
+                borderDash: [5, 5],
+                tension: 0.1
+              }
+            ]
+          },
+          options: {
+            ...commonOptions,
+            scales: {
+              ...commonOptions.scales,
+              y: { 
+                ...commonOptions.scales.y,
+                title: { display: true, text: 'Virtual Users', color: textColor }
+              }
+            }
+          }
+        });
+      </script>
+      {{end}}
+
+      {{if .HasMetrics}}
+      <div class="section-title">Summary</div>
+      <div class="cards">
+        {{range .Cards}}<div class="card"><span>{{.Label}}</span><strong>{{.Value}}</strong></div>{{end}}
+      </div>
+
+      <div class="tables-grid">
+        {{range .Sections}}
+        <div class="table-wrap">
+          <h2>{{.Name}}</h2>
+          <table><tbody>
+            {{range .Rows}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}
+          </tbody></table>
+        </div>
+        {{end}}
+      </div>
+      {{else}}
+      <div class="empty">Metrics are not available for this run.</div>
+      {{end}}
+    {{else}}
+    <div class="empty">No matching runs found for selected filters.</div>
+    {{end}}
+  {{end}}
+</div>
+</body>
+</html>

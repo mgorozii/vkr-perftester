@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loadtestd
+  namespace: loadtest-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: loadtestd
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces","configmaps","secrets","services","pods"]
+    verbs: ["get","list","watch","create","update","patch","delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get","list","watch","create","update","patch","delete"]
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["servingruntimes","clusterservingruntimes","inferenceservices"]
+    verbs: ["get","list","watch","create","update","patch","delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: loadtestd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: loadtestd
+subjects:
+  - kind: ServiceAccount
+    name: loadtestd
+    namespace: loadtest-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loadtestd
+  namespace: loadtest-system
+spec:
+  selector:
+    app: loadtestd
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadtestd
+  namespace: loadtest-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadtestd
+  template:
+    metadata:
+      labels:
+        app: loadtestd
+    spec:
+      serviceAccountName: loadtestd
+      containers:
+        - name: app
+          image: loadtestd:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              value: postgres://load:load@postgres.loadtest-system:5432/load?sslmode=disable
+            - name: WEBHOOK_URL
+              value: http://loadtestd.loadtest-system:8080/api/v1/report
+            - name: MODEL_HTTP_URL
+              value: http://modelmesh-serving.modelmesh-serving:8008
+            - name: MODEL_GRPC_URL
+              value: modelmesh-serving.modelmesh-serving:8033
+            - name: K6_IMAGE
+              value: load-k6:dev
+            - name: MODEL_CONTROLLER_NAMESPACE
+              value: modelmesh-serving
+            - name: BASE_RUNTIME_NAME
+              value: triton-2.x
+            - name: STORAGE_SECRET_NAME
+              value: storage-config
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5

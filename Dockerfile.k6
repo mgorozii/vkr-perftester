@@ -1,0 +1,34 @@
+FROM golang:1.26-alpine AS build-executor
+WORKDIR /app
+RUN apk add --no-cache git
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -o executor ./cmd/executor/main.go
+
+FROM golang:1.26-alpine AS build-k6
+RUN apk add --no-cache git
+RUN go install go.k6.io/xk6/cmd/xk6@latest
+
+# inject local xk6-inference build if present
+FROM scratch AS xk6-inference-local
+
+FROM build-k6 AS xk6-builder
+WORKDIR /src
+
+COPY --from=xk6-inference-local . ./xk6-inference
+
+ARG EXTENSION_SOURCE=github.com/mgorozii/xk6-inference
+RUN if [ -f "./xk6-inference/go.mod" ]; then \
+        echo "build local xk6-inference"; \
+        xk6 build --with github.com/mgorozii/xk6-inference=./xk6-inference --output /usr/bin/k6; \
+    else \
+        echo "build remote $EXTENSION_SOURCE"; \
+        xk6 build --with $EXTENSION_SOURCE --output /usr/bin/k6; \
+    fi
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates
+COPY --from=xk6-builder /usr/bin/k6 /usr/bin/k6
+COPY --from=build-executor /app/executor /usr/bin/executor
+ENTRYPOINT ["/usr/bin/executor"]
