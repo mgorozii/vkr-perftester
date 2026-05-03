@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	sloggin "github.com/samber/slog-gin"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 
@@ -28,15 +29,19 @@ import (
 var templates embed.FS
 
 type Server struct {
-	logger *slog.Logger
-	svc    *app.Service
+	logger  *slog.Logger
+	svc     *app.Service
+	metrics http.Handler
 }
 
-func New(logger *slog.Logger, svc *app.Service) *Server { return &Server{logger: logger, svc: svc} }
+func New(logger *slog.Logger, svc *app.Service, metrics http.Handler) *Server {
+	return &Server{logger: logger.With("component", "httpapi.server"), svc: svc, metrics: metrics}
+}
 
 func (s *Server) Handler() http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	r.Use(otelgin.Middleware("loadtestd"))
 	r.Use(sloggin.NewWithConfig(s.logger, sloggin.Config{
 		Filters: []sloggin.Filter{
 			func(c *gin.Context) bool {
@@ -62,6 +67,9 @@ func (s *Server) Handler() http.Handler {
 
 	r.POST("/variable", s.variable)
 	r.GET("/api/v1/grafana/report.html", s.reportHTML)
+	if s.metrics != nil {
+		r.GET("/metrics", gin.WrapH(s.metrics))
+	}
 
 	r.GET("/healthz", s.health)
 	r.GET("/readyz", s.health)
@@ -75,6 +83,7 @@ func (s *Server) health(c *gin.Context) {
 }
 
 func (s *Server) startTest(c *gin.Context) {
+	log := s.logger.With("path", c.Request.URL.Path)
 	var req struct {
 		Tenant       string `json:"tenant"`
 		Name         string `json:"name"`
@@ -113,7 +122,7 @@ func (s *Server) startTest(c *gin.Context) {
 		Protocol:     domain.Protocol(req.Protocol),
 	})
 	if err != nil {
-		s.logger.Error("failed to start test", "error", err)
+		log.With("tenant", req.Tenant, "model", req.Name).ErrorContext(c.Request.Context(), "failed to start test", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -127,6 +136,7 @@ func (s *Server) getRun(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "run id required"})
 		return
 	}
+	log := s.logger.With("run_id", id)
 
 	run, err := s.svc.GetRun(c.Request.Context(), id)
 	if err != nil {
@@ -145,7 +155,7 @@ func (s *Server) getRun(c *gin.Context) {
 	if run.Status == domain.StatusSuccess || run.Status == domain.StatusFailed {
 		steps, err := s.svc.ListSearchSteps(c.Request.Context(), run.ID)
 		if err != nil {
-			s.logger.ErrorContext(c.Request.Context(), "list search steps", "run_id", run.ID, "error", err)
+			log.ErrorContext(c.Request.Context(), "list search steps", "error", err)
 		}
 		if len(steps) > 0 {
 			var maxRPS int
@@ -221,7 +231,7 @@ func (s *Server) acceptReport(c *gin.Context) {
 		Metrics:  req.Metrics,
 	})
 	if err != nil {
-		s.logger.Error("failed to accept report", "run_id", req.RunID, "error", err)
+		s.logger.With("run_id", req.RunID).ErrorContext(c.Request.Context(), "failed to accept report", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -240,7 +250,7 @@ func (s *Server) acceptSearchSteps(c *gin.Context) {
 
 	err := s.svc.AcceptSearchSteps(c.Request.Context(), req.RunID, req.Steps)
 	if err != nil {
-		s.logger.Error("failed to accept search steps", "run_id", req.RunID, "error", err)
+		s.logger.With("run_id", req.RunID).ErrorContext(c.Request.Context(), "failed to accept search steps", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -266,7 +276,7 @@ func (s *Server) acceptRunStatus(c *gin.Context) {
 		return
 	}
 	if err := s.svc.FailRun(c.Request.Context(), req.RunID, req.Error); err != nil {
-		s.logger.Error("failed to accept run status", "run_id", req.RunID, "error", err)
+		s.logger.With("run_id", req.RunID).ErrorContext(c.Request.Context(), "failed to accept run status", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -374,7 +384,7 @@ type reportPage struct {
 func (s *Server) reportHTML(c *gin.Context) {
 	page, err := s.buildReportPage(c.Request.Context(), c.Request)
 	if err != nil {
-		s.logger.Error("failed to build report page", "error", err)
+		s.logger.ErrorContext(c.Request.Context(), "failed to build report page", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

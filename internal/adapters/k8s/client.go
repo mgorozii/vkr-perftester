@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/mgorozii/perftester/internal/domain"
+	"github.com/mgorozii/perftester/internal/telemetry"
 )
 
 var (
@@ -64,6 +65,7 @@ func NewAPI(opts Options) (*API, error) {
 			return nil, err
 		}
 	}
+	cfg.WrapTransport = telemetry.WrapTransport
 	core, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, err

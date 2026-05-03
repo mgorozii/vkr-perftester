@@ -1,0 +1,73 @@
+@baseUrl = http://localhost:8080
+@tenant = default
+@modelName = resnet50
+@s3Path = s3://models/resnet50/1
+@duration = 30s
+@targetRps = 100
+@maxLatencyMs = 200
+@protocol = grpc
+@modelFormat = triton
+
+### health
+# @name health
+GET {{baseUrl}}/healthz
+
+### start fixed
+# @name fixed
+POST {{baseUrl}}/api/v1/tests:start
+Content-Type: application/json
+
+{"tenant":"{{tenant}}","name":"{{modelName}}","s3_path":"{{s3Path}}","target_rps":{{targetRps}},"duration":"{{duration}}","protocol":"{{protocol}}","model_format":"{{modelFormat}}"}
+> {% client.global.set("run_id", response.body.run_id); %}
+
+### start search
+# @name search
+POST {{baseUrl}}/api/v1/tests:start
+Content-Type: application/json
+
+{"tenant":"{{tenant}}","name":"{{modelName}}","s3_path":"{{s3Path}}","max_latency_ms":{{maxLatencyMs}},"protocol":"{{protocol}}","model_format":"{{modelFormat}}"}
+> {% client.global.set("run_id", response.body.run_id); %}
+
+### status
+# @name status
+GET {{baseUrl}}/api/v1/runs/{{run_id}}
+
+### cancel
+# @name cancel
+POST {{baseUrl}}/api/v1/runs/{{run_id}}/cancel
+
+### report
+# @name report
+GET {{baseUrl}}/api/v1/grafana/report.html?run_id={{run_id}}
+
+### mock report
+# @name mreport
+POST {{baseUrl}}/api/v1/report
+Content-Type: application/json
+
+{"run_id":"{{run_id}}","metrics":[{"name":"http_req_duration","value":45.2,"timestamp":"{{$isoTimestamp}}"},{"name":"http_reqs","value":1500,"timestamp":"{{$isoTimestamp}}"}]}
+
+### mock steps
+# @name msteps
+POST {{baseUrl}}/api/v1/search_steps
+Content-Type: application/json
+
+{"run_id":"{{run_id}}","steps":[{"step_number":1,"rps":100,"p99_latency_ms":12.5,"success_rate":1.0},{"step_number":2,"rps":200,"p99_latency_ms":150.2,"success_rate":0.99}]}
+
+### mock fail
+# @name mfail
+POST {{baseUrl}}/api/v1/run_status
+Content-Type: application/json
+
+{"run_id":"{{run_id}}","status":"FAILED","error":"k6 process exited with status 1"}
+
+### grafana var
+# @name var
+POST {{baseUrl}}/variable
+Content-Type: application/json
+
+{"payload":{"target":"run_id|{{tenant}}|{{modelName}}"}}
+
+### metrics
+# @name metrics
+GET {{baseUrl}}/metrics

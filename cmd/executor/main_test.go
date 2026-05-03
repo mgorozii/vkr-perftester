@@ -105,7 +105,7 @@ func TestSaveStepRetriesOn5xx(t *testing.T) {
 	defer srv.Close()
 
 	r := &Runner{Executor: config.Executor{StepsURL: srv.URL}}
-	saveStep(context.Background(), silentLogger(), r, SearchStep{StepNumber: 1})
+	saveStep(context.Background(), srv.Client(), silentLogger(), r, SearchStep{StepNumber: 1})
 	if got := calls.Load(); got < 3 {
 		t.Fatalf("ожидалось ≥3 запросов (ретраи), получено %d", got)
 	}
@@ -119,7 +119,7 @@ func TestSaveStepDoesNotRetryOn4xx(t *testing.T) {
 	defer srv.Close()
 
 	r := &Runner{Executor: config.Executor{StepsURL: srv.URL}}
-	saveStep(context.Background(), silentLogger(), r, SearchStep{StepNumber: 1})
+	saveStep(context.Background(), srv.Client(), silentLogger(), r, SearchStep{StepNumber: 1})
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("ожидался ровно 1 запрос (без ретрая на 4xx), получено %d", got)
 	}
@@ -133,7 +133,7 @@ func TestReportFailureRetriesOn5xx(t *testing.T) {
 	defer srv.Close()
 
 	r := &Runner{Executor: config.Executor{StatusURL: srv.URL}}
-	reportFailure(silentLogger(), r, errors.New("test failure"))
+	reportFailure(context.Background(), srv.Client(), silentLogger(), r, errors.New("test failure"))
 	if got := calls.Load(); got < 3 {
 		t.Fatalf("ожидалось ≥3 запросов (ретраи), получено %d", got)
 	}

@@ -28,4 +28,5 @@ ensure_metrics_server
 kubectl apply -f "$ROOT/k8s/load-system"
 kubectl wait --for=condition=available deployment/postgres -n loadtest-system --timeout=300s
 kubectl wait --for=condition=available deployment/grafana -n loadtest-system --timeout=300s
+kubectl wait --for=condition=available deployment/jaeger -n loadtest-system --timeout=300s
 kubectl wait --for=condition=available deployment/loadtestd -n loadtest-system --timeout=300s

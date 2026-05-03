@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/XSAM/otelsql"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 
 	"github.com/mgorozii/perftester/internal/app"
 	"github.com/mgorozii/perftester/internal/domain"
@@ -16,25 +19,52 @@ import (
 type Repo struct {
 	logger *slog.Logger
 	db     *sql.DB
+	reg    otelmetric.Registration
 }
 
 func Open(ctx context.Context, logger *slog.Logger, dsn string) (*Repo, error) {
-	db, err := sql.Open("pgx", dsn)
+	logger = logger.With("component", "postgres.repo")
+	attrs := append(otelsql.AttributesFromDSN(dsn), attribute.String("db.system.name", "postgresql"))
+	db, err := otelsql.Open("pgx", dsn, otelsql.WithAttributes(attrs...))
 	if err != nil {
 		return nil, err
 	}
+	reg, err := otelsql.RegisterDBStatsMetrics(db, otelsql.WithAttributes(attrs...))
+	if err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			logger.ErrorContext(ctx, "failed to close db after metrics init error", "error", closeErr)
+		}
+		return nil, err
+	}
 	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
+		if unregErr := reg.Unregister(); unregErr != nil {
+			logger.ErrorContext(ctx, "failed to unregister db metrics after ping error", "error", unregErr)
+		}
+		if closeErr := db.Close(); closeErr != nil {
+			logger.ErrorContext(ctx, "failed to close db after ping error", "error", closeErr)
+		}
 		return nil, err
 	}
 	if err := runMigrations(ctx, logger, db); err != nil {
-		_ = db.Close()
+		if unregErr := reg.Unregister(); unregErr != nil {
+			logger.ErrorContext(ctx, "failed to unregister db metrics after migration error", "error", unregErr)
+		}
+		if closeErr := db.Close(); closeErr != nil {
+			logger.ErrorContext(ctx, "failed to close db after migration error", "error", closeErr)
+		}
 		return nil, err
 	}
-	return &Repo{logger: logger, db: db}, nil
+	return &Repo{logger: logger, db: db, reg: reg}, nil
 }
 
-func (r *Repo) Close() error { return r.db.Close() }
+func (r *Repo) Close() error {
+	if r.reg != nil {
+		if err := r.reg.Unregister(); err != nil {
+			r.logger.Error("failed to unregister db metrics", "error", err)
+		}
+	}
+	return r.db.Close()
+}
 
 func (r *Repo) CreateRun(ctx context.Context, run domain.Run) error {
 	var rps sql.NullInt32
@@ -85,7 +115,11 @@ func (r *Repo) ListRuns(ctx context.Context, filter app.RunFilter) ([]domain.Run
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			r.logger.ErrorContext(ctx, "failed to close runs rows", "error", err)
+		}
+	}()
 	var out []domain.Run
 	for rows.Next() {
 		run, err := scanRun(rows)
@@ -110,12 +144,20 @@ func (r *Repo) SaveMetrics(ctx context.Context, metrics []domain.Metric) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			r.logger.ErrorContext(ctx, "failed to rollback", "error", err)
+		}
+	}()
 	stmt, err := tx.PrepareContext(ctx, `insert into metrics (run_id, timestamp, metric_name, value) values ($1,$2,$3,$4)`)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = stmt.Close() }()
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			r.logger.ErrorContext(ctx, "failed to close stmt", "error", err)
+		}
+	}()
 	for _, metric := range metrics {
 		if _, err := stmt.ExecContext(ctx, metric.RunID, metric.Timestamp, metric.MetricName, metric.Value); err != nil {
 			return err
@@ -129,7 +171,11 @@ func (r *Repo) SaveSearchSteps(ctx context.Context, steps []domain.SearchStep) e
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			r.logger.ErrorContext(ctx, "failed to rollback search steps tx", "error", err)
+		}
+	}()
 	stmt, err := tx.PrepareContext(ctx, `
 		insert into search_steps (run_id, step_number, rps, actual_rps, vus, max_vus, duration_seconds, p99_latency_ms, error_rate, stop_reason, error)
 		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -147,7 +193,11 @@ func (r *Repo) SaveSearchSteps(ctx context.Context, steps []domain.SearchStep) e
 	if err != nil {
 		return err
 	}
-	defer func() { _ = stmt.Close() }()
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			r.logger.ErrorContext(ctx, "failed to close search steps stmt", "error", err)
+		}
+	}()
 	for _, step := range steps {
 		if _, err := stmt.ExecContext(ctx, step.RunID, step.StepNumber, step.RPS, step.ActualRPS, step.VUs, step.MaxVUs, step.DurationSeconds, step.P99LatencyMS, step.ErrorRate, step.StopReason, step.Error); err != nil {
 			return err
@@ -164,7 +214,11 @@ func (r *Repo) ListSearchSteps(ctx context.Context, runID string) ([]domain.Sear
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			r.logger.ErrorContext(ctx, "failed to close search steps rows", "error", err)
+		}
+	}()
 	var out []domain.SearchStep
 	for rows.Next() {
 		var step domain.SearchStep
@@ -192,7 +246,11 @@ func (r *Repo) ListMetrics(ctx context.Context, filter app.MetricsFilter) ([]dom
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			r.logger.ErrorContext(ctx, "failed to close metrics rows", "error", err)
+		}
+	}()
 	var out []domain.Metric
 	for rows.Next() {
 		var metric domain.Metric
@@ -212,7 +270,11 @@ func (r *Repo) ListActiveRuns(ctx context.Context) ([]domain.Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			r.logger.ErrorContext(ctx, "failed to close active runs rows", "error", err)
+		}
+	}()
 	var out []domain.Run
 	for rows.Next() {
 		run, err := scanRun(rows)

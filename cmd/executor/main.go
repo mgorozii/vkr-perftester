@@ -12,8 +12,11 @@ import (
 	"os/exec"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/mgorozii/perftester/internal/config"
 	"github.com/mgorozii/perftester/internal/k6"
+	"github.com/mgorozii/perftester/internal/telemetry"
 )
 
 const (
@@ -67,20 +70,33 @@ type stepResult struct {
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
-
-	if err := run(logger); err != nil {
+	if err := runMain(logger); err != nil {
 		logger.Error("executor failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
+func runMain(logger *slog.Logger) error {
 	cfg, err := config.LoadExecutor()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	tel, err := telemetry.Init(context.Background(), "executor", false, cfg.SamplingRatio)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := tel.Shutdown(context.Background()); err != nil {
+			logger.Error("failed to shutdown telemetry", "error", err)
+		}
+	}()
+	logger = tel.Logger
+
+	return run(telemetry.ExtractEnv(context.Background()), cfg, logger, telemetry.NewHTTPClient())
+}
+
+func run(ctx context.Context, cfg config.Executor, logger *slog.Logger, client *http.Client) error {
 	data, err := os.ReadFile(cfg.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to read k6 config: %w", err)
@@ -95,13 +111,21 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("failed to create work dir: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(workDir) }()
+	defer func() {
+		if err := os.RemoveAll(workDir); err != nil {
+			logger.Error("failed to remove work dir", "path", workDir, "error", err)
+		}
+	}()
 
 	root, err := os.OpenRoot(workDir)
 	if err != nil {
 		return fmt.Errorf("failed to open root: %w", err)
 	}
-	defer func() { _ = root.Close() }()
+	defer func() {
+		if err := root.Close(); err != nil {
+			logger.Error("failed to close root", "path", workDir, "error", err)
+		}
+	}()
 
 	r := &Runner{
 		Executor:   cfg,
@@ -109,41 +133,46 @@ func run(logger *slog.Logger) error {
 		WorkDir:    workDir,
 		Root:       root,
 	}
+	log := logger.With("run_id", r.BaseConfig.RunID)
 
 	if err := root.WriteFile("script.js", []byte(k6.JS), 0o600); err != nil {
 		return fmt.Errorf("failed to write script: %w", err)
 	}
 
 	if r.SLO > 0 {
-		logger.Info("search mode", "run_id", r.BaseConfig.RunID, "slo_ms", r.SLO)
-		err = runSearch(logger, r)
+		log.InfoContext(ctx, "search mode", "slo_ms", r.SLO)
+		err = runSearch(ctx, log, client, r)
 	} else {
-		logger.Info("fixed mode", "run_id", r.BaseConfig.RunID, "rps", r.BaseConfig.TargetRPS, "duration", r.BaseConfig.Duration)
-		err = runFixed(logger, r)
+		log.InfoContext(ctx, "fixed mode", "rps", r.BaseConfig.TargetRPS, "duration", r.BaseConfig.Duration)
+		err = runFixed(ctx, log, client, r)
 	}
 	if err != nil {
-		reportFailure(logger, r, err)
+		reportFailure(ctx, client, log, r, err)
 	}
 	return err
 }
 
-func runFixed(logger *slog.Logger, r *Runner) error {
-	if err := waitForModel(context.Background(), logger, r); err != nil {
-		return err
-	}
-	dur, _ := time.ParseDuration(r.BaseConfig.Duration)
-	_, err := runK6(context.Background(), logger, r, r.BaseConfig.TargetRPS, dur, true)
-	return err
-}
-
-func runSearch(logger *slog.Logger, r *Runner) error {
-	ctx, cancel := context.WithTimeout(context.Background(), r.Timeout)
-	defer cancel()
-
+func runFixed(ctx context.Context, logger *slog.Logger, _ *http.Client, r *Runner) error {
 	if err := waitForModel(ctx, logger, r); err != nil {
 		return err
 	}
-	if _, err := runK6(ctx, logger, r, searchWarmupRPS, warmupDuration, false); err != nil {
+	dur, err := time.ParseDuration(r.BaseConfig.Duration)
+	if err != nil {
+		return fmt.Errorf("invalid fixed duration %q: %w", r.BaseConfig.Duration, err)
+	}
+	_, err = runK6(ctx, logger, r, r.BaseConfig.TargetRPS, dur, true)
+	return err
+}
+
+func runSearch(ctx context.Context, logger *slog.Logger, client *http.Client, r *Runner) error {
+	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
+	log := logger.With("run_id", r.BaseConfig.RunID)
+
+	if err := waitForModel(ctx, log, r); err != nil {
+		return err
+	}
+	if _, err := runK6(ctx, log, r, searchWarmupRPS, warmupDuration, false); err != nil {
 		return fmt.Errorf("warm-up failed: %w", err)
 	}
 
@@ -152,12 +181,12 @@ func runSearch(logger *slog.Logger, r *Runner) error {
 	firstFailure := 0
 
 	for rps := initialSearchRPS; ; rps *= 2 {
-		res, err := probe(ctx, logger, r, rps)
+		res, err := probe(ctx, log, r, rps)
 		if err != nil {
-			saveStep(ctx, logger, r, failedStep(stepNumber, rps, stepDuration, err))
+			saveStep(ctx, client, log, r, failedStep(stepNumber, rps, stepDuration, err))
 			return fmt.Errorf("search probe step %d at %d RPS failed: %w", stepNumber, rps, err)
 		}
-		saveStep(ctx, logger, r, toSearchStep(stepNumber, res, stepDuration))
+		saveStep(ctx, client, log, r, toSearchStep(stepNumber, res, stepDuration))
 		stepNumber++
 		if res.stopReason != "" {
 			firstFailure = rps
@@ -174,12 +203,12 @@ func runSearch(logger *slog.Logger, r *Runner) error {
 		low, high := lastSuccess, firstFailure
 		for i := 0; i < maxBinarySteps && high-low > 1; i++ {
 			mid := low + (high-low)/2
-			res, err := probe(ctx, logger, r, mid)
+			res, err := probe(ctx, log, r, mid)
 			if err != nil {
-				saveStep(ctx, logger, r, failedStep(stepNumber, mid, stepDuration, err))
+				saveStep(ctx, client, log, r, failedStep(stepNumber, mid, stepDuration, err))
 				return fmt.Errorf("binary search step %d at %d RPS failed: %w", stepNumber, mid, err)
 			}
-			saveStep(ctx, logger, r, toSearchStep(stepNumber, res, stepDuration))
+			saveStep(ctx, client, log, r, toSearchStep(stepNumber, res, stepDuration))
 			stepNumber++
 			if res.stopReason != "" {
 				high = mid
@@ -190,19 +219,19 @@ func runSearch(logger *slog.Logger, r *Runner) error {
 		}
 	}
 
-	if err := waitForModel(ctx, logger, r); err != nil {
+	if err := waitForModel(ctx, log, r); err != nil {
 		return err
 	}
 	duration := finalDuration(r)
-	logger.Info("starting final validation", "rps", best, "duration", duration)
-	summary, err := runK6(ctx, logger, r, best, duration, true)
+	log.InfoContext(ctx, "starting final validation", "rps", best, "duration", duration)
+	summary, err := runK6(ctx, log, r, best, duration, true)
 	if err != nil {
-		saveStep(ctx, logger, r, failedStep(stepNumber, best, duration, fmt.Errorf("final validation failed: %w", err)))
+		saveStep(ctx, client, log, r, failedStep(stepNumber, best, duration, fmt.Errorf("final validation failed: %w", err)))
 		return fmt.Errorf("final validation at %d RPS failed: %w", best, err)
 	}
 
 	res := summarize(summary, best)
-	saveStep(ctx, logger, r, toSearchStep(stepNumber, res, duration))
+	saveStep(ctx, client, log, r, toSearchStep(stepNumber, res, duration))
 
 	return nil
 }
@@ -214,7 +243,7 @@ func probe(ctx context.Context, logger *slog.Logger, r *Runner, rps int) (stepRe
 	}
 	res := summarize(summary, rps)
 	res.stopReason = searchStopReason(r, res)
-	logger.Info("probe result", "rps", rps, "actual", res.actualRPS, "p99_ms", res.p99, "error_rate", res.errorRate, "stop", res.stopReason)
+	logger.InfoContext(ctx, "probe result", "rps", rps, "actual", res.actualRPS, "p99_ms", res.p99, "error_rate", res.errorRate, "stop", res.stopReason)
 	return res, nil
 }
 
@@ -254,7 +283,7 @@ func waitForModel(ctx context.Context, logger *slog.Logger, r *Runner) error {
 		if err == nil {
 			return nil
 		}
-		logger.Debug("model not ready, waiting...", "error", err)
+		logger.DebugContext(ctx, "model not ready, waiting...", "error", err)
 		time.Sleep(5 * time.Second)
 	}
 	return errors.New("model readiness timed out")
@@ -296,7 +325,7 @@ func runK6(ctx context.Context, logger *slog.Logger, r *Runner, rps int, duratio
 	cmd.Env = append(os.Environ(), "CONFIG_PATH="+runConfigName)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	logger.Debug("running k6", "rps", rps, "duration", duration)
+	logger.DebugContext(ctx, "running k6", "rps", rps, "duration", duration)
 	if err := cmd.Run(); err != nil {
 		return K6Summary{}, err
 	}
@@ -342,51 +371,53 @@ func failedStep(stepNumber, rps int, duration time.Duration, err error) SearchSt
 
 var retryDelay = time.Second
 
-func postJSON(ctx context.Context, logger *slog.Logger, url string, body []byte) {
+func postJSON(ctx context.Context, client *http.Client, logger *slog.Logger, url string, body []byte) {
 	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				logger.Error("webhook aborted", "url", url)
+				logger.ErrorContext(ctx, "webhook aborted", "url", url)
 				return
 			case <-time.After(retryDelay):
 			}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
-			logger.Error("failed to build webhook request", "url", url, "error", err)
+			logger.ErrorContext(ctx, "failed to build webhook request", "url", url, "error", err)
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
-			logger.Error("webhook post failed", "url", url, "attempt", attempt+1, "error", err)
+			logger.ErrorContext(ctx, "webhook post failed", "url", url, "attempt", attempt+1, "error", err)
 			continue
 		}
-		_ = resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			logger.ErrorContext(ctx, "failed to close webhook response body", "url", url, "error", err)
+		}
 		if resp.StatusCode < 300 {
 			return
 		}
-		logger.Error("webhook returned unexpected status", "url", url, "status", resp.StatusCode, "attempt", attempt+1)
+		logger.ErrorContext(ctx, "webhook returned unexpected status", "url", url, "status", resp.StatusCode, "attempt", attempt+1)
 		if resp.StatusCode < 500 {
 			return
 		}
 	}
 }
 
-func saveStep(ctx context.Context, logger *slog.Logger, r *Runner, step SearchStep) {
+func saveStep(ctx context.Context, client *http.Client, logger *slog.Logger, r *Runner, step SearchStep) {
 	if r.StepsURL == "" {
 		return
 	}
 	body, err := json.Marshal(map[string]any{"run_id": r.BaseConfig.RunID, "steps": []SearchStep{step}})
 	if err != nil {
-		logger.Error("failed to marshal step payload", "error", err)
+		logger.ErrorContext(ctx, "failed to marshal step payload", "error", err)
 		return
 	}
-	postJSON(ctx, logger, r.StepsURL, body)
+	postJSON(ctx, client, logger, r.StepsURL, body)
 }
 
-func reportFailure(logger *slog.Logger, r *Runner, err error) {
+func reportFailure(parent context.Context, client *http.Client, logger *slog.Logger, r *Runner, err error) {
 	if r.StatusURL == "" {
 		return
 	}
@@ -396,12 +427,16 @@ func reportFailure(logger *slog.Logger, r *Runner, err error) {
 		"error":  err.Error(),
 	})
 	if marshalErr != nil {
-		logger.Error("failed to marshal failure payload", "error", marshalErr)
+		logger.ErrorContext(parent, "failed to marshal failure payload", "error", marshalErr)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx := context.Background()
+	if sc := trace.SpanContextFromContext(parent); sc.IsValid() {
+		ctx = trace.ContextWithSpanContext(ctx, sc)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	postJSON(ctx, logger, r.StatusURL, body)
+	postJSON(ctx, client, logger, r.StatusURL, body)
 }
 
 func finalDuration(r *Runner) time.Duration {

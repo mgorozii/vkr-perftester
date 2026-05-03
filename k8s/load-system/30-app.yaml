@@ -44,6 +44,9 @@ spec:
     - name: http
       port: 8080
       targetPort: 8080
+    - name: metrics
+      port: 9090
+      targetPort: 9090
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -67,9 +70,14 @@ spec:
           imagePullPolicy: Never
           ports:
             - containerPort: 8080
+            - containerPort: 9090
           env:
             - name: DATABASE_URL
               value: postgres://load:load@postgres.loadtest-system:5432/load?sslmode=disable
+            - name: METRICS_ADDR
+              value: :9090
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: http://jaeger.loadtest-system:4318/v1/traces
             - name: WEBHOOK_URL
               value: http://loadtestd.loadtest-system:8080/api/v1/report
             - name: MODEL_HTTP_URL

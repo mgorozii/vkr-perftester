@@ -104,7 +104,7 @@ func (m *mockOrch) Cleanup(_ context.Context, _ domain.Run) error { return nil }
 
 func TestHealth(t *testing.T) {
 	svc := app.NewService(slog.Default(), &mockRepo{}, &mockOrch{}, func() string { return "1" }, time.Now, time.Hour)
-	srv := New(slog.Default(), svc)
+	srv := New(slog.Default(), svc, nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -126,7 +126,7 @@ func TestHealth(t *testing.T) {
 func TestStartTest(t *testing.T) {
 	repo := &mockRepo{}
 	svc := app.NewService(slog.Default(), repo, &mockOrch{}, func() string { return "run-1" }, time.Now, time.Hour)
-	srv := New(slog.Default(), svc)
+	srv := New(slog.Default(), svc, nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -167,7 +167,7 @@ func TestGrafanaReportHTML(t *testing.T) {
 		Tenant: "acme", Name: "resnet", S3Path: "s3://models/resnet", Protocol: "HTTP", TargetRPS: &rps, Duration: &dur,
 	})
 
-	srv := New(slog.Default(), svc)
+	srv := New(slog.Default(), svc, nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -212,7 +212,7 @@ func TestGetRunIncludesFailureReasonAndStepError(t *testing.T) {
 		},
 	}
 	svc := app.NewService(slog.Default(), repo, &mockOrch{}, func() string { return "run-1" }, time.Now, time.Hour)
-	ts := httptest.NewServer(New(slog.Default(), svc).Handler())
+	ts := httptest.NewServer(New(slog.Default(), svc, nil).Handler())
 	defer ts.Close()
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v1/runs/run-1", nil)
@@ -246,7 +246,7 @@ func TestGetRunLogsErrorWhenStepsQueryFails(t *testing.T) {
 	cap := &logCapture{}
 	logger := slog.New(cap)
 	svc := app.NewService(logger, repo, &mockOrch{}, func() string { return "run-1" }, time.Now, time.Hour)
-	ts := httptest.NewServer(New(logger, svc).Handler())
+	ts := httptest.NewServer(New(logger, svc, nil).Handler())
 	defer ts.Close()
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v1/runs/run-1", nil)

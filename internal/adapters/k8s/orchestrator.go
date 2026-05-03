@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strconv"
 	"strings"
 
 	"github.com/mgorozii/perftester/internal/domain"
+	"github.com/mgorozii/perftester/internal/telemetry"
 )
 
 type ResourceNames struct {
@@ -30,15 +32,17 @@ type Orchestrator struct {
 	httpURL    string
 	grpcURL    string
 	webhookURL string
+	otelEnv    map[string]string
 }
 
-func New(logger *slog.Logger, k8s Client, webhook, http, grpc string) *Orchestrator {
+func New(logger *slog.Logger, k8s Client, webhook, http, grpc string, otelEnv map[string]string) *Orchestrator {
 	return &Orchestrator{
-		logger:     logger,
+		logger:     logger.With("component", "k8s.orchestrator"),
 		k8s:        k8s,
 		httpURL:    http,
 		grpcURL:    grpc,
 		webhookURL: webhook,
+		otelEnv:    otelEnv,
 	}
 }
 
@@ -54,13 +58,14 @@ func Names(run domain.Run) ResourceNames {
 
 func (o *Orchestrator) Submit(ctx context.Context, run domain.Run) error {
 	n := Names(run)
-	o.logger.Info("submitting run", "run_id", run.ID, "namespace", n.Namespace)
+	log := o.logger.With("run_id", run.ID, "namespace", n.Namespace)
+	log.InfoContext(ctx, "submitting run")
 
 	if err := o.k8s.EnsureInference(ctx, run, n); err != nil {
-		o.logger.Error("failed to ensure inference environment", "run_id", run.ID, "namespace", n.Namespace, "error", err)
+		log.ErrorContext(ctx, "failed to ensure inference environment", "error", err)
 		return err
 	}
-	o.logger.Info("inference environment ready", "run_id", run.ID)
+	log.InfoContext(ctx, "inference environment ready")
 
 	rps := 0
 	if run.TargetRPS != nil {
@@ -92,27 +97,34 @@ func (o *Orchestrator) Submit(ctx context.Context, run domain.Run) error {
 		"STEPS_URL":  strings.Replace(o.webhookURL, "/report", "/search_steps", 1),
 		"STATUS_URL": strings.Replace(o.webhookURL, "/report", "/run_status", 1),
 	}
+	maps.Copy(env, telemetry.InjectEnv(ctx))
+	for k, v := range o.otelEnv {
+		if v != "" {
+			env[k] = v
+		}
+	}
 	if run.MaxLatencyMS != nil {
 		env["MAX_LATENCY_MS"] = strconv.Itoa(int(*run.MaxLatencyMS))
 	}
 
 	if err := o.k8s.CreateLoadJob(ctx, n.Namespace, n.Job, string(configJS), env); err != nil {
-		o.logger.Error("failed to create load job", "job", n.Job, "error", err)
+		log.With("job", n.Job).ErrorContext(ctx, "failed to create load job", "error", err)
 		return err
 	}
-	o.logger.Info("load job created", "job", n.Job, "run_id", run.ID)
+	log.With("job", n.Job).InfoContext(ctx, "load job created")
 	return nil
 }
 
 func (o *Orchestrator) Cleanup(ctx context.Context, run domain.Run) error {
 	n := Names(run)
-	o.logger.Info("cleaning up run resources", "run_id", run.ID, "namespace", n.Namespace)
+	log := o.logger.With("run_id", run.ID, "namespace", n.Namespace)
+	log.InfoContext(ctx, "cleaning up run resources")
 
 	if err := o.k8s.DeleteNamespace(ctx, n.Namespace); err != nil {
-		o.logger.Error("failed to delete namespace", "run_id", run.ID, "namespace", n.Namespace, "error", err)
+		log.ErrorContext(ctx, "failed to delete namespace", "error", err)
 		return err
 	}
 
-	o.logger.Info("cleanup completed", "run_id", run.ID, "namespace", n.Namespace)
+	log.InfoContext(ctx, "cleanup completed")
 	return nil
 }

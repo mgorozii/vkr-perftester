@@ -8,3 +8,6 @@ spec:
     - name: http
       port: 8080
       targetPort: 8080
+    - name: metrics
+      port: {{ .Values.metricsPort }}
+      targetPort: {{ .Values.metricsPort }}

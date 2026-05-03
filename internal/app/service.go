@@ -62,7 +62,7 @@ type Service struct {
 }
 
 func NewService(logger *slog.Logger, repo RunRepository, orch Orchestrator, idgen IDGen, now Now, runTimeout time.Duration) *Service {
-	return &Service{logger: logger, repo: repo, orch: orch, idgen: idgen, now: now, runTimeout: runTimeout}
+	return &Service{logger: logger.With("component", "app.service"), repo: repo, orch: orch, idgen: idgen, now: now, runTimeout: runTimeout}
 }
 
 func (s *Service) StartTest(ctx context.Context, cmd domain.StartTestCmd) (string, error) {
@@ -85,12 +85,15 @@ func (s *Service) StartTest(ctx context.Context, cmd domain.StartTestCmd) (strin
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	s.logger.Info("starting test", "run_id", run.ID, "tenant", run.Tenant, "model", run.ModelName)
+	log := s.logger.With("run_id", run.ID, "tenant", run.Tenant, "model", run.ModelName)
+	log.InfoContext(ctx, "starting test")
 	if err := s.repo.CreateRun(ctx, run); err != nil {
 		return "", err
 	}
 	if err := s.orch.Submit(ctx, run); err != nil {
-		_ = s.FailRun(context.Background(), run.ID, err.Error())
+		if failErr := s.FailRun(context.Background(), run.ID, err.Error()); failErr != nil {
+			log.ErrorContext(ctx, "failed to mark run as failed", "error", failErr)
+		}
 		return "", err
 	}
 	if err := s.repo.UpdateRunStatus(ctx, run.ID, domain.StatusRunning, s.now(), ""); err != nil {
@@ -160,9 +163,10 @@ func (s *Service) FailRun(ctx context.Context, runID, reason string) error {
 	if err != nil {
 		return err
 	}
-	s.logger.Error("run failed", "run_id", run.ID, "tenant", run.Tenant, "model", run.ModelName, "reason", reason)
+	log := s.logger.With("run_id", run.ID, "tenant", run.Tenant, "model", run.ModelName)
+	log.ErrorContext(ctx, "run failed", "reason", reason)
 	if err := s.orch.Cleanup(ctx, run); err != nil {
-		s.logger.Error("cleanup failed for failed run", "run_id", run.ID, "error", err)
+		log.ErrorContext(ctx, "cleanup failed for failed run", "error", err)
 	}
 	return s.repo.UpdateRunStatus(ctx, run.ID, domain.StatusFailed, s.now(), reason)
 }
@@ -185,6 +189,7 @@ func (s *Service) TimeoutSweep(ctx context.Context) error {
 	}
 	now := s.now()
 	for _, run := range runs {
+		log := s.logger.With("run_id", run.ID, "tenant", run.Tenant, "model", run.ModelName)
 		timeout := s.runTimeout
 		baseBuffer := 10 * time.Minute
 
@@ -196,9 +201,9 @@ func (s *Service) TimeoutSweep(ctx context.Context) error {
 		}
 
 		if now.After(run.CreatedAt.Add(timeout)) {
-			s.logger.Info("timing out stuck run", "run_id", run.ID, "tenant", run.Tenant, "model", run.ModelName, "duration", time.Since(run.CreatedAt))
+			log.InfoContext(ctx, "timing out stuck run", "duration", time.Since(run.CreatedAt))
 			if err := s.orch.Cleanup(ctx, run); err != nil {
-				s.logger.Error("cleanup failed for timeout run", "run_id", run.ID, "error", err)
+				log.ErrorContext(ctx, "cleanup failed for timeout run", "error", err)
 				return err
 			}
 			if err := s.repo.UpdateRunStatus(ctx, run.ID, domain.StatusFailed, now, "run timed out"); err != nil {
@@ -229,9 +234,10 @@ func (s *Service) CancelRun(ctx context.Context, id string) error {
 	if run.Status != domain.StatusPending && run.Status != domain.StatusRunning {
 		return ErrCancelInactive
 	}
-	s.logger.Info("canceling run by operator", "run_id", run.ID, "tenant", run.Tenant, "model", run.ModelName)
+	log := s.logger.With("run_id", run.ID, "tenant", run.Tenant, "model", run.ModelName)
+	log.InfoContext(ctx, "canceling run by operator")
 	if err := s.orch.Cleanup(ctx, run); err != nil {
-		s.logger.Error("cleanup failed during cancellation", "run_id", run.ID, "error", err)
+		log.ErrorContext(ctx, "cleanup failed during cancellation", "error", err)
 	}
 	return s.repo.UpdateRunStatus(ctx, run.ID, domain.StatusFailed, s.now(), "cancelled by operator")
 }

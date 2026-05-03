@@ -39,6 +39,12 @@ linters-settings:
   govet:
     enable:
       - shadow
+  sloglint:
+    no-global: "all"
+    context: "all"
+    static-msg: true
+    no-mixed-args: true
+    key-naming-case: "snake"
 
 issues:
   max-same-issues: 0
