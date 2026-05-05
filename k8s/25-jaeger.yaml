@@ -7,12 +7,8 @@ spec:
   selector:
     app: jaeger
   ports:
-    - name: ui
-      port: 16686
-      targetPort: 16686
-    - name: otlp-http
-      port: 4318
-      targetPort: 4318
+    - {name: ui, port: 16686, targetPort: 16686}
+    - {name: otlp-http, port: 4318, targetPort: 4318}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -20,7 +16,6 @@ metadata:
   name: jaeger
   namespace: loadtest-system
 spec:
-  replicas: 1
   selector:
     matchLabels:
       app: jaeger
@@ -33,11 +28,9 @@ spec:
         - name: jaeger
           image: cr.jaegertracing.io/jaegertracing/jaeger:2.17.0
           ports:
-            - containerPort: 16686
-            - containerPort: 4318
+            - {containerPort: 16686}
+            - {containerPort: 4318}
           readinessProbe:
             httpGet:
               path: /
               port: 16686
-            initialDelaySeconds: 5
-            periodSeconds: 5

@@ -1,0 +1,7 @@
+.git
+.idea
+.run
+tmp
+.modelmesh-serving-repo
+*.onnx
+*.pb

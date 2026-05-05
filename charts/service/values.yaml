@@ -1,8 +1,0 @@
-image:
-  repository: loadtestd
-  tag: latest
-service:
-  port: 8080
-metricsPort: 9090
-postgres:
-  image: postgres:16

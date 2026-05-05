@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: loadtest-system
+  labels:
+    grafana_datasource: "1"
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: load-api
+        uid: load-api
+        type: simpod-json-datasource
+        access: proxy
+        url: http://loadtestd.loadtest-system:8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: loadtest-system
+  labels:
+    grafana_dashboard: "1"
+data:
+  load-tests.json: |
+    {
+      "uid":"load-tests",
+      "title":"Load Tests",
+      "schemaVersion":39,
+      "version":11,
+      "refresh":"5s",
+      "templating":{"list":[
+        {
+          "name":"tenant",
+          "label":"tenant",
+          "type":"query",
+          "datasource":{"type":"simpod-json-datasource","uid":"load-api"},
+          "definition": "tenant",
+          "query": { "query": "tenant", "format": "string" },
+          "refresh": 1
+        },
+        {
+          "name":"model_name",
+          "label":"model_name",
+          "type":"query",
+          "datasource":{"type":"simpod-json-datasource","uid":"load-api"},
+          "definition": "model_name|${tenant}",
+          "query": { "query": "model_name|${tenant}", "format": "string" },
+          "refresh": 1
+        },
+        {
+          "name":"run_id",
+          "label":"run_id",
+          "type":"query",
+          "datasource":{"type":"simpod-json-datasource","uid":"load-api"},
+          "definition": "run_id|${tenant}|${model_name}",
+          "query": { "query": "run_id|${tenant}|${model_name}", "format": "string" },
+          "refresh": 1
+        }
+      ]},
+      "panels":[
+        {"type":"text","title":"Report","gridPos":{"h":24,"w":24,"x":0,"y":0},"options":{"mode":"html","content":"<iframe src=\"http://127.0.0.1:8080/api/v1/grafana/report.html?tenant=${tenant}&model_name=${model_name}&run_id=${run_id}\" style=\"width:100%;height:2000px;border:0;border-radius:16px;background:#fff\"></iframe>"}}
+      ],
+      "time":{"from":"now-15m","to":"now"}
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+  namespace: loadtest-system
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: load
+        orgId: 1
+        folder: ""
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards

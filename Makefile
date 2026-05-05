@@ -1,4 +1,12 @@
-.PHONY: test lint build images infra start full down
+.PHONY: up down test lint start-search start-fixed
+
+up:
+	tilt up
+
+down:
+	tilt down
+	kubectl delete ns loadtest-system modelmesh-serving --ignore-not-found=true
+	kubectl get ns -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep '^demo-' | xargs -r kubectl delete ns --ignore-not-found=true || true
 
 test:
 	go test -race -v ./...
@@ -6,22 +14,8 @@ test:
 lint:
 	golangci-lint run --fix ./...
 
-build:
-	go build ./...
+start-search:
+	./scripts/start_search.sh
 
-images:
-	./scripts/build_images.sh
-
-infra:
-	./scripts/modelmesh_up.sh
-	./scripts/system_up.sh
-
-start:
-	./scripts/port_forward_system.sh
-	./scripts/start_test.sh
-
-full:
-	./scripts/full.sh
-
-down:
-	./scripts/down.sh
+start-fixed:
+	./scripts/start_fixed.sh

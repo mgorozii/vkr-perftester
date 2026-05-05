@@ -2,6 +2,7 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: ${MODEL_NAME}
+  namespace: modelmesh-serving
   annotations:
     serving.kserve.io/deploymentMode: ModelMesh
 spec:

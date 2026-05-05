@@ -1,0 +1,8 @@
+.git
+.idea
+.run
+tmp
+**/node_modules
+**/.modelmesh-serving-repo
+charts/grafana
+charts/service

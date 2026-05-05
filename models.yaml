@@ -1,0 +1,4 @@
+models:
+  - name: resnet50
+    file: resnet50.onnx
+    path: onnx/resnet50.onnx

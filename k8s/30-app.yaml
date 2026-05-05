@@ -73,7 +73,7 @@ spec:
             - containerPort: 9090
           env:
             - name: DATABASE_URL
-              value: postgres://load:load@postgres.loadtest-system:5432/load?sslmode=disable
+              value: postgres://load:load@postgres-postgresql.loadtest-system:5432/load?sslmode=disable
             - name: METRICS_ADDR
               value: :9090
             - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT

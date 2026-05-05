@@ -1,3 +1,0 @@
-grafana:
-  image: grafana/grafana:11.0.0
-  datasourceUrl: http://loadtestd:8080
